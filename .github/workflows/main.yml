@@ -47,6 +47,19 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python telegram_notify.py
 
+      - name: Commit debug info kung nag-fail ang Telegram send
+        if: always()
+        run: |
+          git config user.name "lotto-bot"
+          git config user.email "lotto-bot@users.noreply.github.com"
+          if [ -f telegram_debug.txt ]; then
+            git add telegram_debug.txt
+            git commit -m "debug: telegram send failure info"
+            git push
+          else
+            echo "Walang debug file, successful ang send o wala pang result."
+          fi
+
       - name: Upload results.json as artifact
         uses: actions/upload-artifact@v4
         with:

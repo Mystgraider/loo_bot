@@ -44,9 +44,21 @@ def send_telegram_message(token, chat_id, text):
             detail = resp.json().get("description", resp.text)
         except ValueError:
             detail = resp.text
-        print(f"Telegram API error ({resp.status_code}): {detail}", file=sys.stderr)
-        resp.raise_for_status()
+        # RuntimeError na may klarong detalye (hindi lang generic HTTP status)
+        raise RuntimeError(f"Telegram API error ({resp.status_code}): {detail}")
     return resp.json()
+
+
+def write_debug_file(token, chat_id, error_text):
+    """Isulat ang diagnostic info sa isang file na puwedeng i-commit at
+    tingnan (HINDI kasama ang buong token -- masked lang, para safe)."""
+    masked_token = f"{token[:6]}...{token[-4:]}" if token and len(token) > 12 else "(sobrang ikli o wala)"
+    with open("telegram_debug.txt", "w", encoding="utf-8") as f:
+        f.write("=== Telegram send debug info ===\n")
+        f.write(f"chat_id ginamit: {chat_id!r}\n")
+        f.write(f"bot token (masked): {masked_token}\n")
+        f.write(f"token length: {len(token) if token else 0}\n")
+        f.write(f"error: {error_text}\n")
 
 
 def main():
@@ -61,8 +73,17 @@ def main():
         results = json.load(f)
 
     message = format_message(results)
-    result = send_telegram_message(token, chat_id, message)
-    print("Naipadala sa Telegram:", result.get("ok"))
+
+    try:
+        result = send_telegram_message(token, chat_id, message)
+        print("Naipadala sa Telegram:", result.get("ok"))
+        # tanggalin ang lumang debug file kung successful na (para malinis)
+        if os.path.exists("telegram_debug.txt"):
+            os.remove("telegram_debug.txt")
+    except Exception as e:
+        print(str(e), file=sys.stderr)
+        write_debug_file(token, chat_id, str(e))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
