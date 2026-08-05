@@ -1,5 +1,0 @@
-=== Telegram send debug info ===
-chat_id ginamit: '8623590360'
-bot token (masked): 862359...1wpI
-token length: 46
-error: Telegram API error (403): Forbidden: the bot can't send messages to the bot
