@@ -42,6 +42,7 @@ from analyzer import (
     train_and_score,
     combined_score,
 )
+from coverage_tracker import log_combo, get_coverage_stats
 
 DISCLAIMER = (
     "⚠️ Disclaimer: Statistical exploration lang ito (frequency + Poisson + ML). "
@@ -193,6 +194,8 @@ def analyze_game(game_name, game_cfg, today):
             "target_draw_time": slot_label,
             "is_daily_draw": True,
         })
+        if game_name == "ez2":
+            log_combo(result["recommendation"])
         out.append(result)
     return out
 
@@ -214,6 +217,8 @@ def main():
         for r in game_results:
             results["games"].append(r)
             print(json.dumps(r, indent=2, ensure_ascii=False))
+
+    results["ez2_coverage"] = get_coverage_stats()
 
     with open("results.json", "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)

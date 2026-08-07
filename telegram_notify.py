@@ -41,6 +41,15 @@ def format_message(results):
         lines.append(f"({g['n_draws_analyzed']} draws, {ml_tag})")
         lines.append(f"→ Suggested: `{nums}`{order_note}")
         lines.append("")
+
+    cov = results.get("ez2_coverage")
+    if cov:
+        lines.append(
+            f"📊 *EZ2 Coverage:* {cov['unique_combos_covered']}/{cov['total_possible']} "
+            f"({cov['percent']}%) ng posibleng Rambolito combinations na na-suggest na"
+        )
+        lines.append("")
+
     lines.append(results["disclaimer"])
     return "\n".join(lines)
 
