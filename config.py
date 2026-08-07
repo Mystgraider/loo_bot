@@ -30,9 +30,9 @@ GAMES = {
     "6/42": {"type": "combo", "pick": 6, "range": (1, 42), "csv": "data/draws_6_42.csv",
              "ordered": False, "draw_days": ["Tuesday", "Thursday", "Saturday"]},
     "ez2":  {"type": "combo", "pick": 2, "range": (1, 31), "csv": "data/draws_ez2.csv",
-             "ordered": True, "draw_days": None},
+             "ordered": True, "draw_days": None, "multi_draw_per_day": True},
     "swertres": {"type": "digit", "pick": 3, "range": (0, 9), "csv": "data/draws_swertres.csv",
-                 "ordered": True, "draw_days": None},
+                 "ordered": True, "draw_days": None, "multi_draw_per_day": True},
     "6d": {"type": "digit", "pick": 6, "range": (0, 9), "csv": "data/draws_6d.csv",
            "ordered": True, "draw_days": ["Tuesday", "Thursday", "Saturday"]},
     "4d": {"type": "digit", "pick": 4, "range": (0, 9), "csv": "data/draws_4d.csv",
@@ -45,3 +45,9 @@ MIN_DRAWS_FOR_ML = 60
 
 # Bilang ng huling draws na susuriin (per instructions mo: 500 max)
 MAX_DRAWS_WINDOW = 500
+
+# Order ng draws kada araw para sa "multi_draw_per_day" games (EZ2, Swertres).
+# TANDAAN: umaasa ito na palaging 2PM->5PM->9PM ang pagkakasunod-sunod ng
+# 3 rows kada petsa sa CSV (ito ang order na ginagamit ng scraper.py at ng
+# orihinal na historical data import).
+SLOT_LABELS = ["2:00 PM", "5:00 PM", "9:00 PM"]

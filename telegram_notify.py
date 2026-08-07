@@ -26,7 +26,9 @@ def format_message(results):
         nums = ", ".join(f"{n:02d}" for n in g["recommendation"])
         ml_tag = "ML✅" if g["ml_used"] else "ML skipped (kulang pa ang data)"
 
-        if g.get("is_daily_draw"):
+        if g.get("target_draw_time"):
+            date_label = f"para sa {g['target_draw_date']}, {g['target_draw_time']}"
+        elif g.get("is_daily_draw"):
             date_label = f"para sa {g['target_draw_date']} (2PM/5PM/9PM)"
         else:
             date_label = f"para sa {g['target_draw_date']} ({g.get('target_draw_weekday', '')})"
