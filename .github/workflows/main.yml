@@ -5,12 +5,17 @@ on:
     - cron: "30 13 * * *"
   workflow_dispatch: {}
 
+concurrency:
+  group: daily-lotto-analysis
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
 jobs:
   scrape-analyze-notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -19,19 +24,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt
 
-      - name: Scrape latest PCSO results
+      - name: Run regression tests
+        run: python -m pytest -q
+
+      - name: Scrape, validate, and canonicalize draw data
         run: python scraper.py
 
-      - name: Commit updated data (kung may bago)
+      - name: Commit validated draw data
         run: |
           git config user.name "lotto-bot"
           git config user.email "lotto-bot@users.noreply.github.com"
           if git diff --quiet -- data/; then
-            echo "Walang bagong draws, skip commit."
+            echo "No data changes to commit."
           else
             git add data/
             git commit -m "chore: update draw results $(date -u +%Y-%m-%d)"
@@ -47,21 +56,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python telegram_notify.py
 
-      - name: Commit debug info kung nag-fail ang Telegram send
-        if: always()
-        run: |
-          git config user.name "lotto-bot"
-          git config user.email "lotto-bot@users.noreply.github.com"
-          if [ -f telegram_debug.txt ]; then
-            git add telegram_debug.txt
-            git commit -m "debug: telegram send failure info"
-            git push
-          else
-            echo "Walang debug file, successful ang send o wala pang result."
-          fi
-
       - name: Upload results.json as artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lotto-results
           path: results.json
+          if-no-files-found: warn

@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-telegram_notify.py
-
-Nagbabasa ng results.json (galing sa predict.py) at nagpapadala ng
-formatted na message sa Telegram gamit ang Bot API.
-
-Kailangan (env vars, ilalagay bilang GitHub Actions secrets):
-  TELEGRAM_BOT_TOKEN  - token mula sa @BotFather
-  TELEGRAM_CHAT_ID    - chat/channel/group id kung saan ipapadala
-"""
+"""Format results.json and send the daily report to Telegram."""
 
 import json
 import os
@@ -18,25 +9,18 @@ import requests
 
 
 def format_message(results):
-    lines = [f"🎱 *Lotto Statistical Report*", ""]
+    lines = ["🎱 *Lotto Statistical Report*", ""]
     for g in results["games"]:
         if "error" in g:
             lines.append(f"*{g['game']}*: ⚠️ {g['error']}")
             continue
         nums = ", ".join(f"{n:02d}" for n in g["recommendation"])
         ml_tag = "ML✅" if g["ml_used"] else "ML skipped (kulang pa ang data)"
-
         if g.get("target_draw_time"):
             date_label = f"para sa {g['target_draw_date']}, {g['target_draw_time']}"
-        elif g.get("is_daily_draw"):
-            date_label = f"para sa {g['target_draw_date']} (2PM/5PM/9PM)"
         else:
             date_label = f"para sa {g['target_draw_date']} ({g.get('target_draw_weekday', '')})"
-
-        order_note = ""
-        if g.get("ordered"):
-            order_note = " -- *may order* (standard bet) o gamitin ang *Rambolito* kung gusto mong hindi mahalaga ang pagkakasunod"
-
+        order_note = " -- *may order*" if g.get("ordered") else ""
         lines.append(f"*{g['game']}* -- {date_label}")
         lines.append(f"({g['n_draws_analyzed']} draws, {ml_tag})")
         lines.append(f"→ Suggested: `{nums}`{order_note}")
@@ -49,7 +33,6 @@ def format_message(results):
             f"({cov['percent']}%) ng posibleng Rambolito combinations na na-suggest na"
         )
         lines.append("")
-
     lines.append(results["disclaimer"])
     return "\n".join(lines)
 
@@ -66,47 +49,30 @@ def send_telegram_message(token, chat_id, text):
             detail = resp.json().get("description", resp.text)
         except ValueError:
             detail = resp.text
-        # RuntimeError na may klarong detalye (hindi lang generic HTTP status)
         raise RuntimeError(f"Telegram API error ({resp.status_code}): {detail}")
     return resp.json()
-
-
-def write_debug_file(token, chat_id, error_text):
-    """Isulat ang diagnostic info sa isang file na puwedeng i-commit at
-    tingnan (HINDI kasama ang buong token -- masked lang, para safe)."""
-    masked_token = f"{token[:6]}...{token[-4:]}" if token and len(token) > 12 else "(sobrang ikli o wala)"
-    with open("telegram_debug.txt", "w", encoding="utf-8") as f:
-        f.write("=== Telegram send debug info ===\n")
-        f.write(f"chat_id ginamit: {chat_id!r}\n")
-        f.write(f"bot token (masked): {masked_token}\n")
-        f.write(f"token length: {len(token) if token else 0}\n")
-        f.write(f"error: {error_text}\n")
 
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-
     if not token or not chat_id:
         print("Walang TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID sa environment.", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
     with open("results.json", "r", encoding="utf-8") as f:
         results = json.load(f)
-
     message = format_message(results)
 
     try:
         result = send_telegram_message(token, chat_id, message)
         print("Naipadala sa Telegram:", result.get("ok"))
-        # tanggalin ang lumang debug file kung successful na (para malinis)
-        if os.path.exists("telegram_debug.txt"):
-            os.remove("telegram_debug.txt")
-    except Exception as e:
-        print(str(e), file=sys.stderr)
-        write_debug_file(token, chat_id, str(e))
-        sys.exit(1)
+        return 0
+    except Exception as exc:
+        # Never write credentials or chat IDs to a tracked repository file.
+        print(f"Telegram send failed: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

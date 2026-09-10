@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
-"""Strict walk-forward / out-of-sample backtest for Loo-bot.
+"""Strict walk-forward backtest that shares the production analyzer API."""
 
-The target draw is never included in the feature/training history.
-Compares Frequency, Poisson, ML, Frequency+Poisson, Full Loo-bot,
-and an analytical random baseline.
-"""
-
+import hashlib
 import json
 import os
+from collections import Counter
 from math import comb
-from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 from analyzer import (
     frequency_analysis,
     poisson_fairness_test,
     build_ml_features,
+    train_and_score,
+    combined_score,
 )
-from config import GAMES, MIN_DRAWS_FOR_ML, MAX_DRAWS_WINDOW
-
-try:
-    from xgboost import XGBClassifier
-except Exception:
-    XGBClassifier = None
-
+from config import GAMES, MIN_DRAWS_FOR_ML, MAX_DRAWS_WINDOW, SLOT_LABELS
+from schema import validate_dataframe
 
 OUT_DIR = "."
 
@@ -37,150 +31,135 @@ def norm01(values):
     return (s - lo) / (hi - lo)
 
 
-def ml_scores(history, num_cols, number_range):
-    if XGBClassifier is None or len(history) < MIN_DRAWS_FOR_ML:
-        return pd.Series(0.5, index=range(number_range[0], number_range[1] + 1))
+def score_target(history, game):
+    pick = game["pick"]
+    number_range = tuple(game["range"])
+    num_cols = [f"n{i}" for i in range(1, pick + 1)]
 
-    features = build_ml_features(
-        history,
-        num_cols,
-        number_range,
-        window_sizes=(10, 30, 100),
-    )
-    if features.empty or "label" not in features.columns:
-        return pd.Series(0.5, index=range(number_range[0], number_range[1] + 1))
+    counts = frequency_analysis(history, num_cols, number_range)
+    poisson = poisson_fairness_test(counts, len(history), pick, number_range)
+    training_df, next_draw_df = build_ml_features(history, num_cols, number_range)
+    ml, ml_used = train_and_score(training_df, next_draw_df, number_range, MIN_DRAWS_FOR_ML)
 
-    feature_cols = [
-        c for c in features.columns
-        if c not in {"label", "draw_index", "number"}
-    ]
-    train = features.dropna(subset=["label"])
-    next_draw = features[features["label"].isna()].copy()
-    if train.empty or next_draw.empty:
-        return pd.Series(0.5, index=range(number_range[0], number_range[1] + 1))
-
-    model = XGBClassifier(
-        n_estimators=150,
-        max_depth=3,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        eval_metric="logloss",
-        n_jobs=-1,
-        random_state=42,
-    )
-    model.fit(train[feature_cols], train["label"].astype(int))
-    probs = model.predict_proba(next_draw[feature_cols])[:, 1]
-    return pd.Series(probs, index=next_draw["number"].astype(int))
+    freq_n = norm01(counts)
+    z_n = norm01(poisson["z_scores"])
+    ml_n = norm01(ml)
+    return {
+        "Frequency": freq_n,
+        "Poisson": z_n,
+        "ML": ml_n,
+        "Frequency+Poisson": 0.5 * freq_n + 0.5 * z_n,
+        "Full Loo-bot": 0.25 * freq_n + 0.25 * z_n + 0.50 * ml_n,
+    }, ml_used
 
 
-def pick_numbers(score, pick, ordered=False):
+def _seed(method, date_str, slot):
+    raw = f"{method}|{date_str}|{slot}".encode()
+    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big")
+
+
+def pick_numbers(score, pick, game, seed):
     ranked = score.sort_values(ascending=False)
-    chosen = list(ranked.head(pick).index)
-    if not ordered:
-        chosen.sort()
-    return chosen
+    if game.get("type") == "combo" and not game.get("order_matters", False):
+        return sorted(int(x) for x in ranked.head(pick).index)
 
+    # Ordered digit games may repeat digits. Weighted sampling with replacement
+    # mirrors the production selection semantics without pretending it is a true
+    # probability forecast.
+    if game.get("allow_repetition", False):
+        values = np.asarray(ranked.index, dtype=int)
+        weights = np.clip(ranked.to_numpy(dtype=float), 0, None)
+        if weights.sum() <= 0 or not np.isfinite(weights).all():
+            weights = np.ones(len(values), dtype=float)
+        rng = np.random.default_rng(seed)
+        return [int(x) for x in rng.choice(values, size=pick, replace=True, p=weights / weights.sum())]
 
-def random_expected(number_range, pick, ordered):
-    n = number_range[1] - number_range[0] + 1
-    overlap = (pick * pick) / n
-    exact_p = (1 / (n ** pick)) if ordered else (1 / comb(n, pick))
-    return overlap, exact_p
+    return [int(x) for x in ranked.head(pick).index]
 
 
 def actual_numbers(row, num_cols):
     return [int(row[c]) for c in num_cols if pd.notna(row[c])]
 
 
-def score_target(history, game):
-    num_cols = [f"n{i}" for i in range(1, game["pick"] + 1)]
-    number_range = tuple(game["range"])
-
-    counts = frequency_analysis(history, num_cols, number_range)
-    z = poisson_fairness_test(
-        counts,
-        len(history),
-        game["pick"],
-        number_range,
-    )["z_scores"]
-
-    freq = pd.Series(counts, dtype=float)
-    z = pd.Series(z, dtype=float)
-    ml = ml_scores(history, num_cols, number_range)
-
-    freq_n = norm01(freq)
-    z_n = norm01(z)
-    ml_n = norm01(ml)
-
-    scores = {
-        "Frequency": freq_n,
-        "Poisson": z_n,
-        "ML": ml_n,
-        "Frequency+Poisson": 0.5 * freq_n + 0.5 * z_n,
-        "Full Loo-bot": 0.25 * freq_n + 0.25 * z_n + 0.50 * ml_n,
-    }
-    return {name: pick_numbers(s, game["pick"], game["ordered"]) for name, s in scores.items()}
+def overlap(pred, actual, allow_repetition=False):
+    if not pred or not actual:
+        return 0
+    if not allow_repetition:
+        return len(set(pred) & set(actual))
+    return sum((Counter(pred) & Counter(actual)).values())
 
 
-def overlap(pred, actual):
-    return len(set(pred) & set(actual)) if pred and actual else 0
+def exact_hit(pred, actual, order_matters):
+    return pred == actual if order_matters else sorted(pred) == sorted(actual)
 
 
-def exact_hit(pred, actual, ordered):
-    if ordered:
-        return pred == actual
-    return sorted(pred) == sorted(actual)
+def random_expected(number_range, pick, game):
+    n = number_range[1] - number_range[0] + 1
+    expected_overlap = (pick * pick) / n
+    if game.get("order_matters", False):
+        exact_p = 1 / (n ** pick) if game.get("allow_repetition", False) else 1 / (n * (n - 1) * max(1, np.prod(range(n - pick + 1, n + 1))))
+        # For the configured ordered non-repeating case (EZ2), the exact
+        # probability is 1 / P(n,pick).
+        if not game.get("allow_repetition", False):
+            denominator = 1
+            for k in range(pick):
+                denominator *= n - k
+            exact_p = 1 / denominator
+    else:
+        exact_p = 1 / comb(n, pick)
+    return expected_overlap, exact_p
 
 
 def prepare_rows(csv_path, game):
-    num_cols = [f"n{i}" for i in range(1, game["pick"] + 1)]
+    pick = game["pick"]
+    multi = game.get("multi_draw_per_day", False)
     df = pd.read_csv(csv_path)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
+    df = validate_dataframe(df, pick, tuple(game["range"]), multi_draw=multi)
+    return df, [f"n{i}" for i in range(1, pick + 1)]
 
-    # Multi-draw games are stored in draw order per date; keep that order.
-    if game.get("multi_draw_per_day"):
-        slots = ["2:00 PM", "5:00 PM", "9:00 PM"]
-        df["slot"] = df.groupby(df["date"].dt.date).cumcount().map(
-            lambda i: slots[i] if i < len(slots) else f"slot-{i+1}"
-        )
-    else:
-        df["slot"] = ""
-    return df, num_cols
+
+def iter_series(df, game):
+    if not game.get("multi_draw_per_day", False):
+        yield "", df.reset_index(drop=True)
+        return
+    for slot in SLOT_LABELS:
+        yield slot, df[df["slot"] == slot].drop(columns=["slot"]).reset_index(drop=True)
 
 
 def run_game(game_name, game):
-    csv_path = game["file"]
+    csv_path = game["csv"]
     if not os.path.exists(csv_path):
         return []
 
     df, num_cols = prepare_rows(csv_path, game)
     rows = []
     min_history = max(MIN_DRAWS_FOR_ML, 10)
-    if len(df) <= min_history:
-        return rows
 
-    for target_i in range(min_history, len(df)):
-        history = df.iloc[max(0, target_i - MAX_DRAWS_WINDOW):target_i].copy()
-        target = df.iloc[target_i]
-        actual = actual_numbers(target, num_cols)
-        predictions = score_target(history, game)
-        exp_overlap, exact_p = random_expected(game["range"], game["pick"], game["ordered"])
-
-        for method, pred in predictions.items():
-            rows.append({
-                "game": game_name,
-                "date": target["date"].strftime("%Y-%m-%d"),
-                "slot": target["slot"],
-                "method": method,
-                "prediction": "-".join(f"{x:02d}" for x in pred),
-                "actual": "-".join(f"{x:02d}" for x in actual),
-                "matches": overlap(pred, actual),
-                "exact_hit": int(exact_hit(pred, actual, game["ordered"])),
-                "random_expected_matches": exp_overlap,
-                "random_exact_probability": exact_p,
-            })
+    for slot, series in iter_series(df, game):
+        if len(series) <= min_history:
+            continue
+        for target_i in range(min_history, len(series)):
+            history = series.iloc[max(0, target_i - MAX_DRAWS_WINDOW):target_i].copy()
+            target = series.iloc[target_i]
+            actual = actual_numbers(target, num_cols)
+            scores, ml_used = score_target(history, game)
+            date_str = target["date"].strftime("%Y-%m-%d")
+            for method, score in scores.items():
+                pred = pick_numbers(score, game["pick"], game, _seed(method, date_str, slot))
+                exp_overlap, exact_p = random_expected(game["range"], game["pick"], game)
+                rows.append({
+                    "game": game_name,
+                    "date": date_str,
+                    "slot": slot,
+                    "method": method,
+                    "prediction": "-".join(f"{x:02d}" for x in pred),
+                    "actual": "-".join(f"{x:02d}" for x in actual),
+                    "matches": overlap(pred, actual, game.get("allow_repetition", False)),
+                    "exact_hit": int(exact_hit(pred, actual, game.get("order_matters", False))),
+                    "ml_used": int(ml_used),
+                    "random_expected_matches": exp_overlap,
+                    "random_exact_probability": exact_p,
+                })
     return rows
 
 
@@ -191,7 +170,6 @@ def main():
 
     results = pd.DataFrame(all_rows)
     results.to_csv(os.path.join(OUT_DIR, "backtest_v2_results.csv"), index=False)
-
     if results.empty:
         summary = pd.DataFrame()
     else:
@@ -202,13 +180,13 @@ def main():
                 total_matches=("matches", "sum"),
                 avg_matches=("matches", "mean"),
                 exact_hits=("exact_hit", "sum"),
+                ml_used_rate=("ml_used", "mean"),
                 random_expected_matches=("random_expected_matches", "mean"),
                 random_exact_probability=("random_exact_probability", "mean"),
             )
         )
-        summary["match_ratio_vs_random"] = (
-            summary["total_matches"] /
-            (summary["predictions"] * summary["random_expected_matches"])
+        summary["match_ratio_vs_random"] = summary["total_matches"] / (
+            summary["predictions"] * summary["random_expected_matches"]
         )
         summary["exact_hit_rate"] = summary["exact_hits"] / summary["predictions"]
 
@@ -217,7 +195,7 @@ def main():
         json.dump(summary.to_dict(orient="records"), f, indent=2, default=str)
 
     print(f"Backtest complete: {len(results)} method-results")
-    print("Strict walk-forward: target draw excluded from all training/features.")
+    print("Strict walk-forward: target draw excluded from all feature/training history.")
 
 
 if __name__ == "__main__":

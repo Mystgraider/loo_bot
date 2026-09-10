@@ -1,28 +1,9 @@
 #!/usr/bin/env python3
-"""
-predict.py
-
-Pangunahing script. Para sa bawat game sa config.py:
-  1. Load-in ang historical draws (huling MAX_DRAWS_WINDOW draws lang)
-  2. Frequency analysis
-  3. Poisson fairness test
-  4. ML scoring (kung sapat ang data)
-  5. Bumuo ng "recommended" na combination base sa combined score
-  6. Kalkulahin kung ANONG PETSA (at, sa EZ2/Swertres, ANONG ORAS) ang
-     susunod na scheduled draw, para malinaw kung para saang draw ang
-     suggestion.
-
-Para sa mga "multi_draw_per_day" games (EZ2, Swertres -- 3x/araw),
-HIWALAY ang analysis per time slot (2PM, 5PM, 9PM) -- ibig sabihin
-magkaiba ang suggestion depende sa oras, hindi iisa lang para sa
-buong araw.
-
-Output: results.json (para magamit ng ibang script, e.g. telegram_notify.py)
-        at print sa console/log ng GitHub Actions.
-"""
+"""Production prediction runner using the shared analyzer and canonical schema."""
 
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -34,14 +15,7 @@ except Exception:
     PH_TZ = None
 
 from config import GAMES, MIN_DRAWS_FOR_ML, MAX_DRAWS_WINDOW, SLOT_LABELS
-from analyzer import (
-    load_draws,
-    frequency_analysis,
-    poisson_fairness_test,
-    build_ml_features,
-    train_and_score,
-    combined_score,
-)
+from analyzer import load_draws, frequency_analysis, poisson_fairness_test, build_ml_features, train_and_score, combined_score
 from coverage_tracker import log_combo, get_coverage_stats
 
 DISCLAIMER = (
@@ -52,16 +26,12 @@ DISCLAIMER = (
 
 
 def get_ph_today():
-    """Kunin ang 'ngayon' na petsa sa Manila time (hindi UTC, dahil doon
-    tumatakbo ang GitHub Actions runner)."""
     if PH_TZ is not None:
         return datetime.now(PH_TZ).date()
     return datetime.now(timezone.utc).date()
 
 
 def next_draw_date(draw_days, today):
-    """Ibinabalik ang PETSA ng SUSUNOD na scheduled draw (susunod na araw
-    palagi, kasi ipinapalagay na tapos na ang draw ng "today")."""
     if draw_days is None:
         return today + timedelta(days=1)
     for offset in range(1, 8):
@@ -71,61 +41,46 @@ def next_draw_date(draw_days, today):
     return None
 
 
-def split_by_slot(df, num_cols):
-    """Hinahati ang isang multi-draw-per-day na dataframe (palaging 3 rows
-    kada date, sa pagkakasunod na 2PM->5PM->9PM) sa 3 HIWALAY na dataframe,
-    isa per time slot -- para hiwalay ang trend/history ng bawat oras."""
-    df = df.copy()
-    df["_slot_idx"] = df.groupby("date").cumcount()
-    slots = {}
-    for i, label in enumerate(SLOT_LABELS):
-        sub = df[df["_slot_idx"] == i].drop(columns=["_slot_idx"]).reset_index(drop=True)
-        slots[label] = sub
-    return slots
+def split_by_slot(df):
+    return {label: df[df["slot"] == label].drop(columns=["slot"]).reset_index(drop=True) for label in SLOT_LABELS}
 
 
-def pick_combo_numbers(scores, pick, number_range):
-    top = list(scores.index[:pick])
-    return sorted(int(n) for n in top)
+def pick_combo_numbers(scores, pick):
+    return sorted(int(n) for n in scores.index[:pick])
 
 
-def pick_digit_numbers(scores, pick, number_range):
-    ranked = scores.sort_values(ascending=False)
-    chosen = []
-    idx = 0
-    ranked_list = list(ranked.index)
-    while len(chosen) < pick:
-        chosen.append(int(ranked_list[idx % len(ranked_list)]))
-        idx += 1
-    return chosen
+def pick_digit_numbers(scores, pick, number_range, seed=42):
+    """Ordered digit selection with replacement; repeated digits are valid."""
+    ranked = scores.reindex(range(number_range[0], number_range[1] + 1)).fillna(0.0)
+    weights = ranked.clip(lower=0).to_numpy(dtype=float)
+    if not np.isfinite(weights).all() or weights.sum() <= 0:
+        weights = np.ones(len(ranked), dtype=float)
+    rng = np.random.default_rng(seed)
+    return [int(x) for x in rng.choice(ranked.index.to_numpy(), size=pick, replace=True, p=weights / weights.sum())]
 
 
 def run_analysis(df, num_cols, game_cfg):
-    """Ang core na analysis (frequency + Poisson + ML + scoring) gamit ang
-    kahit anong dataframe ng draws -- reusable para sa buong-araw na series
-    (combo games) o per-slot na subset (EZ2/Swertres)."""
     pick = game_cfg["pick"]
     number_range = game_cfg["range"]
-    ordered = game_cfg.get("ordered", False)
-    n_draws = len(df)
-
+    order_matters = game_cfg.get("order_matters", False)
     freq_counts = frequency_analysis(df, num_cols, number_range)
-    poisson_result = poisson_fairness_test(freq_counts, n_draws, pick, number_range)
-
+    poisson_result = poisson_fairness_test(freq_counts, len(df), pick, number_range)
     training_df, next_draw_df = build_ml_features(df, num_cols, number_range)
     ml_probs, ml_used = train_and_score(training_df, next_draw_df, number_range, MIN_DRAWS_FOR_ML)
-
     scores = combined_score(freq_counts, poisson_result, ml_probs, ml_used)
 
-    if game_cfg["type"] == "combo" and not ordered:
-        recommendation = pick_combo_numbers(scores, pick, number_range)
-    else:
+    if game_cfg["type"] == "combo" and not order_matters:
+        recommendation = pick_combo_numbers(scores, pick)
+    elif game_cfg["type"] == "digit" and game_cfg.get("allow_repetition", False):
         recommendation = pick_digit_numbers(scores, pick, number_range)
+    else:
+        recommendation = [int(x) for x in scores.index[:pick]]
 
     return {
-        "n_draws_analyzed": n_draws,
+        "n_draws_analyzed": len(df),
         "ml_used": ml_used,
-        "ordered": ordered,
+        "ordered": order_matters,
+        "allow_repetition": game_cfg.get("allow_repetition", False),
         "poisson_p_value": round(poisson_result["p_value"], 4),
         "significantly_biased": poisson_result["is_significantly_biased"],
         "recommendation": recommendation,
@@ -136,61 +91,38 @@ def run_analysis(df, num_cols, game_cfg):
 def analyze_game(game_name, game_cfg, today):
     csv_path = game_cfg["csv"]
     pick = game_cfg["pick"]
-    draw_days = game_cfg.get("draw_days")
     is_multi = game_cfg.get("multi_draw_per_day", False)
-
     if not os.path.exists(csv_path):
-        return [{
-            "game": game_name,
-            "error": f"Walang nahanap na data file: {csv_path}. "
-                     f"Maglagay ng CSV (columns: date,n1,...,n{pick}) para masuri ito.",
-        }]
+        return [{"game": game_name, "error": f"Missing data file: {csv_path}"}]
 
-    df, num_cols = load_draws(csv_path, pick)
-
+    df, num_cols = load_draws(csv_path, pick, game_cfg["range"], multi_draw=is_multi)
     if not is_multi:
         df = df.tail(MAX_DRAWS_WINDOW).reset_index(drop=True)
         if len(df) < 10:
-            return [{
-                "game": game_name,
-                "error": f"Kulang ang historical data ({len(df)} draws lang). "
-                         f"Kailangan ng mas maraming rows sa {csv_path}.",
-            }]
-        target_date = next_draw_date(draw_days, today)
-        try:
-            result = run_analysis(df, num_cols, game_cfg)
-        except Exception as e:
-            return [{"game": game_name, "error": str(e)}]
+            return [{"game": game_name, "error": f"Insufficient historical data: {len(df)} draws."}]
+        target_date = next_draw_date(game_cfg.get("draw_days"), today)
+        result = run_analysis(df, num_cols, game_cfg)
         result.update({
             "game": game_name,
             "target_draw_date": target_date.isoformat() if target_date else None,
             "target_draw_weekday": target_date.strftime("%A") if target_date else None,
-            "is_daily_draw": draw_days is None,
+            "is_daily_draw": game_cfg.get("draw_days") is None,
         })
         return [result]
 
-    # multi-draw-per-day games (EZ2, Swertres): hiwalay na analysis per slot
-    target_date = next_draw_date(None, today)  # laging bukas para sa daily games
-    slots = split_by_slot(df, num_cols)
+    target_date = next_draw_date(None, today)
     out = []
-    for slot_label, slot_df in slots.items():
+    for slot_label, slot_df in split_by_slot(df).items():
         slot_df = slot_df.tail(MAX_DRAWS_WINDOW).reset_index(drop=True)
         game_label = f"{game_name} ({slot_label})"
         if len(slot_df) < 10:
-            out.append({
-                "game": game_label,
-                "error": f"Kulang ang historical data ({len(slot_df)} draws) para sa slot na ito.",
-            })
+            out.append({"game": game_label, "error": f"Insufficient historical data: {len(slot_df)} draws."})
             continue
-        try:
-            result = run_analysis(slot_df, num_cols, game_cfg)
-        except Exception as e:
-            out.append({"game": game_label, "error": str(e)})
-            continue
+        result = run_analysis(slot_df, num_cols, game_cfg)
         result.update({
             "game": game_label,
-            "target_draw_date": target_date.isoformat() if target_date else None,
-            "target_draw_weekday": target_date.strftime("%A") if target_date else None,
+            "target_draw_date": target_date.isoformat(),
+            "target_draw_weekday": target_date.strftime("%A"),
             "target_draw_time": slot_label,
             "is_daily_draw": True,
         })
@@ -208,23 +140,26 @@ def main():
         "disclaimer": DISCLAIMER,
         "games": [],
     }
-
     for game_name, game_cfg in GAMES.items():
         try:
             game_results = analyze_game(game_name, game_cfg, today)
-        except Exception as e:
-            game_results = [{"game": game_name, "error": str(e)}]
-        for r in game_results:
-            results["games"].append(r)
-            print(json.dumps(r, indent=2, ensure_ascii=False))
+        except Exception as exc:
+            game_results = [{"game": game_name, "error": str(exc)}]
+        results["games"].extend(game_results)
+        for result in game_results:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
 
     results["ez2_coverage"] = get_coverage_stats()
-
     with open("results.json", "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
+    errors = [r for r in results["games"] if "error" in r]
+    if errors:
+        print(f"Prediction aborted: {len(errors)} game/slot errors.", file=sys.stderr)
+        return 1
     print("\nNasave sa results.json")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
