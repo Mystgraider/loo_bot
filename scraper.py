@@ -18,7 +18,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from config import GAMES, SLOT_LABELS
-from schema import SLOT_ORDER, canonical_columns, validate_dataframe
+from schema import canonical_columns, validate_dataframe
 
 BASE = "https://www.lottopcso.com"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; lotto-stat-bot/1.1)"}
@@ -47,9 +47,15 @@ def fetch_soup(slug):
 
 
 def parse_date(text):
+    """Parse scraper dates and the ISO dates used by the repository CSVs."""
     text = re.sub(r"[\[\]]", "", text.strip())
     text = text.replace("Mar ", "March ").replace("Aug. ", "August ")
-    for fmt in ("%b. %d, %Y", "%B %d, %Y", "%b %d, %Y"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%b. %d, %Y",
+        "%B %d, %Y",
+        "%b %d, %Y",
+    ):
         try:
             return datetime.strptime(text, fmt).date()
         except ValueError:
