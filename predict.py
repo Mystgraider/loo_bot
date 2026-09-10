@@ -3,6 +3,7 @@
 
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -14,14 +15,7 @@ except Exception:
     PH_TZ = None
 
 from config import GAMES, MIN_DRAWS_FOR_ML, MAX_DRAWS_WINDOW, SLOT_LABELS
-from analyzer import (
-    load_draws,
-    frequency_analysis,
-    poisson_fairness_test,
-    build_ml_features,
-    train_and_score,
-    combined_score,
-)
+from analyzer import load_draws, frequency_analysis, poisson_fairness_test, build_ml_features, train_and_score, combined_score
 from coverage_tracker import log_combo, get_coverage_stats
 
 DISCLAIMER = (
@@ -47,12 +41,8 @@ def next_draw_date(draw_days, today):
     return None
 
 
-def split_by_slot(df, num_cols):
-    """Split canonical multi-draw data using its explicit slot column."""
-    slots = {}
-    for label in SLOT_LABELS:
-        slots[label] = df[df["slot"] == label].drop(columns=["slot"]).reset_index(drop=True)
-    return slots
+def split_by_slot(df):
+    return {label: df[df["slot"] == label].drop(columns=["slot"]).reset_index(drop=True) for label in SLOT_LABELS}
 
 
 def pick_combo_numbers(scores, pick):
@@ -60,29 +50,21 @@ def pick_combo_numbers(scores, pick):
 
 
 def pick_digit_numbers(scores, pick, number_range, seed=42):
-    """Pick ordered digits with replacement; repeated digits are valid.
-
-    Weighted sampling prevents the old bug where digit games could never
-    repeat a digit. A fixed seed keeps the daily result reproducible for the
-    same score vector; this is a selection heuristic, not a probability claim.
-    """
+    """Ordered digit selection with replacement; repeated digits are valid."""
     ranked = scores.reindex(range(number_range[0], number_range[1] + 1)).fillna(0.0)
     weights = ranked.clip(lower=0).to_numpy(dtype=float)
     if not np.isfinite(weights).all() or weights.sum() <= 0:
         weights = np.ones(len(ranked), dtype=float)
-    probabilities = weights / weights.sum()
     rng = np.random.default_rng(seed)
-    return [int(x) for x in rng.choice(ranked.index.to_numpy(), size=pick, replace=True, p=probabilities)]
+    return [int(x) for x in rng.choice(ranked.index.to_numpy(), size=pick, replace=True, p=weights / weights.sum())]
 
 
 def run_analysis(df, num_cols, game_cfg):
     pick = game_cfg["pick"]
     number_range = game_cfg["range"]
     order_matters = game_cfg.get("order_matters", False)
-    n_draws = len(df)
-
     freq_counts = frequency_analysis(df, num_cols, number_range)
-    poisson_result = poisson_fairness_test(freq_counts, n_draws, pick, number_range)
+    poisson_result = poisson_fairness_test(freq_counts, len(df), pick, number_range)
     training_df, next_draw_df = build_ml_features(df, num_cols, number_range)
     ml_probs, ml_used = train_and_score(training_df, next_draw_df, number_range, MIN_DRAWS_FOR_ML)
     scores = combined_score(freq_counts, poisson_result, ml_probs, ml_used)
@@ -92,11 +74,10 @@ def run_analysis(df, num_cols, game_cfg):
     elif game_cfg["type"] == "digit" and game_cfg.get("allow_repetition", False):
         recommendation = pick_digit_numbers(scores, pick, number_range)
     else:
-        # Ordered non-repeating games such as EZ2: top-ranked values are unique.
         recommendation = [int(x) for x in scores.index[:pick]]
 
     return {
-        "n_draws_analyzed": n_draws,
+        "n_draws_analyzed": len(df),
         "ml_used": ml_used,
         "ordered": order_matters,
         "allow_repetition": game_cfg.get("allow_repetition", False),
@@ -110,54 +91,38 @@ def run_analysis(df, num_cols, game_cfg):
 def analyze_game(game_name, game_cfg, today):
     csv_path = game_cfg["csv"]
     pick = game_cfg["pick"]
-    draw_days = game_cfg.get("draw_days")
     is_multi = game_cfg.get("multi_draw_per_day", False)
-
     if not os.path.exists(csv_path):
         return [{"game": game_name, "error": f"Missing data file: {csv_path}"}]
 
-    df, num_cols = load_draws(
-        csv_path,
-        pick,
-        game_cfg["range"],
-        multi_draw=is_multi,
-    )
-
+    df, num_cols = load_draws(csv_path, pick, game_cfg["range"], multi_draw=is_multi)
     if not is_multi:
         df = df.tail(MAX_DRAWS_WINDOW).reset_index(drop=True)
         if len(df) < 10:
             return [{"game": game_name, "error": f"Insufficient historical data: {len(df)} draws."}]
-        target_date = next_draw_date(draw_days, today)
-        try:
-            result = run_analysis(df, num_cols, game_cfg)
-        except Exception as e:
-            return [{"game": game_name, "error": str(e)}]
+        target_date = next_draw_date(game_cfg.get("draw_days"), today)
+        result = run_analysis(df, num_cols, game_cfg)
         result.update({
             "game": game_name,
             "target_draw_date": target_date.isoformat() if target_date else None,
             "target_draw_weekday": target_date.strftime("%A") if target_date else None,
-            "is_daily_draw": draw_days is None,
+            "is_daily_draw": game_cfg.get("draw_days") is None,
         })
         return [result]
 
     target_date = next_draw_date(None, today)
-    slots = split_by_slot(df, num_cols)
     out = []
-    for slot_label, slot_df in slots.items():
+    for slot_label, slot_df in split_by_slot(df).items():
         slot_df = slot_df.tail(MAX_DRAWS_WINDOW).reset_index(drop=True)
         game_label = f"{game_name} ({slot_label})"
         if len(slot_df) < 10:
             out.append({"game": game_label, "error": f"Insufficient historical data: {len(slot_df)} draws."})
             continue
-        try:
-            result = run_analysis(slot_df, num_cols, game_cfg)
-        except Exception as e:
-            out.append({"game": game_label, "error": str(e)})
-            continue
+        result = run_analysis(slot_df, num_cols, game_cfg)
         result.update({
             "game": game_label,
-            "target_draw_date": target_date.isoformat() if target_date else None,
-            "target_draw_weekday": target_date.strftime("%A") if target_date else None,
+            "target_draw_date": target_date.isoformat(),
+            "target_draw_weekday": target_date.strftime("%A"),
             "target_draw_time": slot_label,
             "is_daily_draw": True,
         })
@@ -178,17 +143,23 @@ def main():
     for game_name, game_cfg in GAMES.items():
         try:
             game_results = analyze_game(game_name, game_cfg, today)
-        except Exception as e:
-            game_results = [{"game": game_name, "error": str(e)}]
+        except Exception as exc:
+            game_results = [{"game": game_name, "error": str(exc)}]
+        results["games"].extend(game_results)
         for result in game_results:
-            results["games"].append(result)
             print(json.dumps(result, indent=2, ensure_ascii=False))
 
     results["ez2_coverage"] = get_coverage_stats()
     with open("results.json", "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
+
+    errors = [r for r in results["games"] if "error" in r]
+    if errors:
+        print(f"Prediction aborted: {len(errors)} game/slot errors.", file=sys.stderr)
+        return 1
     print("\nNasave sa results.json")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
