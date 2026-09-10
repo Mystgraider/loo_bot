@@ -4,6 +4,11 @@ import pytest
 from config import GAMES
 from predict import pick_digit_numbers
 from schema import validate_dataframe
+from scraper import parse_date
+
+
+def test_parse_date_accepts_iso_csv_date():
+    assert parse_date("2026-09-09").isoformat() == "2026-09-09"
 
 
 def test_multi_draw_schema_requires_explicit_slot():
