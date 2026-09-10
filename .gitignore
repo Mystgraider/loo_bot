@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 results.json
 scrape_summary.txt
+scrape_summary.json
+telegram_debug.txt
+backtest_v2_results.csv
+backtest_v2_summary.csv
+backtest_v2_summary.json
