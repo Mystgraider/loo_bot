@@ -55,10 +55,13 @@ def test_slots_are_evaluated_independently():
 def test_repository_seed_dataset_is_valid_and_slot_separated():
     data_path = Path(__file__).resolve().parents[1] / "data" / "stl_aklan_pares.csv"
     rows = load_history(data_path)
-    assert len(rows) == 65
-    assert sum(row["slot"] == "2:00 PM" for row in rows) == 33
+    assert len(rows) == 66
+    assert sum(row["slot"] == "2:00 PM" for row in rows) == 34
     assert sum(row["slot"] == "7:00 PM" for row in rows) == 32
     assert len({(row["date"], row["slot"]) for row in rows}) == len(rows)
+    latest = next(row for row in rows if row["date"] == "2026-11-04")
+    assert (latest["slot"], latest["n1"], latest["n2"]) == ("2:00 PM", 2, 25)
+    assert latest["source"] == "user-confirmed-by-user"
 
 
 def test_repository_seed_backtest_does_not_claim_edge_without_evidence():
