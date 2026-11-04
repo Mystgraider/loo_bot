@@ -1,0 +1,54 @@
+name: Aklan STL Pares Research Validation
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/aklan-stl-pares-engine"
+    paths:
+      - "stl_pares.py"
+      - "data/stl_aklan_pares.csv"
+      - "data/stl_aklan_pares_rejected.csv"
+      - "tests/test_stl_pares.py"
+      - ".github/workflows/stl-validation.yml"
+  pull_request:
+    paths:
+      - "stl_pares.py"
+      - "data/stl_aklan_pares.csv"
+      - "data/stl_aklan_pares_rejected.csv"
+      - "tests/test_stl_pares.py"
+      - ".github/workflows/stl-validation.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+      - name: Generate research-only backtest report
+        run: python stl_pares.py --csv data/stl_aklan_pares.csv --output stl_pares_results.json
+
+      - name: Upload research report
+        uses: actions/upload-artifact@v4
+        with:
+          name: aklan-stl-pares-research
+          path: stl_pares_results.json
+          if-no-files-found: error
