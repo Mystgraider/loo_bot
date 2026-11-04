@@ -1,6 +1,6 @@
 # Aklan STL Pares (research module)
 
-This is an isolated research engine for Aklan STL Pares. It is **not enabled as a live Telegram signal**. The current seed dataset contains 65 valid draw rows transcribed from one independent third-party Aklan history page (33 at 2 PM and 32 at 7 PM). It is not an official operator/PCSO feed and has not been independently authenticated against ticket-office records.
+This is an isolated research engine for Aklan STL Pares. It is **not enabled as a live Telegram signal**. The current seed dataset contains 66 valid draw rows transcribed from one independent third-party Aklan history page (34 at 2 PM and 32 at 7 PM). It is not an official operator/PCSO feed and has not been independently authenticated against ticket-office records.
 
 ## Data contract
 
