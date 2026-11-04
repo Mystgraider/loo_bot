@@ -10,6 +10,9 @@ on:
       - "data/stl_aklan_pares.csv"
       - "data/stl_aklan_pares_rejected.csv"
       - "tests/test_stl_pares.py"
+      - "stl_telegram.py"
+      - "tests/test_stl_telegram.py"
+      - ".github/workflows/stl-pares-telegram.yml"
       - ".github/workflows/stl-validation.yml"
   pull_request:
     paths:
