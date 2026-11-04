@@ -50,3 +50,23 @@ def test_slots_are_evaluated_independently():
     assert set(report["slots"]) == set(SLOTS)
     assert report["slots"]["2:00 PM"]["draws"] == 40
     assert report["slots"]["7:00 PM"]["draws"] == 40
+
+
+def test_repository_seed_dataset_is_valid_and_slot_separated():
+    data_path = Path(__file__).resolve().parents[1] / "data" / "stl_aklan_pares.csv"
+    rows = load_history(data_path)
+    assert len(rows) == 65
+    assert sum(row["slot"] == "2:00 PM" for row in rows) == 33
+    assert sum(row["slot"] == "7:00 PM" for row in rows) == 32
+    assert len({(row["date"], row["slot"]) for row in rows}) == len(rows)
+
+
+def test_repository_seed_backtest_does_not_claim_edge_without_evidence():
+    data_path = Path(__file__).resolve().parents[1] / "data" / "stl_aklan_pares.csv"
+    rows = load_history(data_path)
+    report = build_report(rows)
+    assert report["status"] == "RESEARCH_ONLY"
+    for slot in SLOTS:
+        assert report["slots"][slot]["backtest"]["status"] in {
+            "EVALUATED", "INSUFFICIENT_HISTORY"
+        }
