@@ -49,14 +49,27 @@ def pick_combo_numbers(scores, pick):
     return sorted(int(n) for n in scores.index[:pick])
 
 
-def pick_digit_numbers(scores, pick, number_range, seed=42):
-    """Ordered digit selection with replacement; repeated digits are valid."""
-    ranked = scores.reindex(range(number_range[0], number_range[1] + 1)).fillna(0.0)
-    weights = ranked.clip(lower=0).to_numpy(dtype=float)
-    if not np.isfinite(weights).all() or weights.sum() <= 0:
-        weights = np.ones(len(ranked), dtype=float)
-    rng = np.random.default_rng(seed)
-    return [int(x) for x in rng.choice(ranked.index.to_numpy(), size=pick, replace=True, p=weights / weights.sum())]
+def pick_ordered_numbers(df, num_cols, pick, number_range, window=120, smoothing=1.0):
+    """Rank each draw position independently; preserve order and valid repeats.
+
+    The previous implementation collapsed ordered draws into an unordered
+    digit-presence model, then sampled from one aggregate score vector. That
+    discarded position information. This selector uses only prior draws and
+    independently ranks the historical values at each position.
+    """
+    lo, hi = number_range
+    history = df.tail(window)
+    recommendation = []
+    position_top = []
+    for col in num_cols[:pick]:
+        counts = history[col].value_counts().reindex(range(lo, hi + 1), fill_value=0)
+        # Additive smoothing prevents zero-probability positions; it does not
+        # change the ranking when the same prior is applied to every value.
+        smoothed = counts.astype(float) + float(smoothing)
+        ranked = sorted(smoothed.index, key=lambda value: (-smoothed.loc[value], int(value)))
+        recommendation.append(int(ranked[0]))
+        position_top.append([int(value) for value in ranked[:3]])
+    return recommendation, position_top
 
 
 def run_analysis(df, num_cols, game_cfg):
@@ -65,16 +78,30 @@ def run_analysis(df, num_cols, game_cfg):
     order_matters = game_cfg.get("order_matters", False)
     freq_counts = frequency_analysis(df, num_cols, number_range)
     poisson_result = poisson_fairness_test(freq_counts, len(df), pick, number_range)
-    training_df, next_draw_df = build_ml_features(df, num_cols, number_range)
-    ml_probs, ml_used = train_and_score(training_df, next_draw_df, number_range, MIN_DRAWS_FOR_ML)
+
+    # XGBoost's current labels represent number presence in a draw, not
+    # position-specific outcomes. It is therefore not valid for ordered games.
+    if order_matters:
+        ml_probs = freq_counts.astype(float).mul(0).add(0.5)
+        ml_used = False
+    else:
+        training_df, next_draw_df = build_ml_features(df, num_cols, number_range)
+        ml_probs, ml_used = train_and_score(training_df, next_draw_df, number_range, MIN_DRAWS_FOR_ML)
+
     scores = combined_score(freq_counts, poisson_result, ml_probs, ml_used)
 
-    if game_cfg["type"] == "combo" and not order_matters:
+    position_top = None
+    if order_matters:
+        recommendation, position_top = pick_ordered_numbers(
+            df, num_cols, pick, number_range
+        )
+        recommendation_method = "position_specific_historical_frequency"
+    elif game_cfg["type"] == "combo":
         recommendation = pick_combo_numbers(scores, pick)
-    elif game_cfg["type"] == "digit" and game_cfg.get("allow_repetition", False):
-        recommendation = pick_digit_numbers(scores, pick, number_range)
+        recommendation_method = "frequency_plus_validated_model" if ml_used else "historical_frequency_baseline"
     else:
-        recommendation = [int(x) for x in scores.index[:pick]]
+        recommendation = pick_combo_numbers(scores, pick)
+        recommendation_method = "historical_frequency_baseline"
 
     return {
         "n_draws_analyzed": len(df),
