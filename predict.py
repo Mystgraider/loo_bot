@@ -6,16 +6,14 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-import numpy as np
-
 try:
     from zoneinfo import ZoneInfo
     PH_TZ = ZoneInfo("Asia/Manila")
 except Exception:
     PH_TZ = None
 
-from config import GAMES, MIN_DRAWS_FOR_ML, MAX_DRAWS_WINDOW, SLOT_LABELS
-from analyzer import load_draws, frequency_analysis, poisson_fairness_test, build_ml_features, train_and_score, combined_score
+from config import GAMES, MAX_DRAWS_WINDOW, SLOT_LABELS
+from analyzer import load_draws, frequency_analysis, poisson_fairness_test, combined_score
 from coverage_tracker import log_combo, get_coverage_stats
 
 DISCLAIMER = (
