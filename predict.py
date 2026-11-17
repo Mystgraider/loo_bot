@@ -3,10 +3,9 @@
 
 import json
 import os
+import random
 import sys
 from datetime import datetime, timedelta, timezone
-
-import numpy as np
 
 try:
     from zoneinfo import ZoneInfo
@@ -14,14 +13,14 @@ try:
 except Exception:
     PH_TZ = None
 
-from config import GAMES, MIN_DRAWS_FOR_ML, MAX_DRAWS_WINDOW, SLOT_LABELS
-from analyzer import load_draws, frequency_analysis, poisson_fairness_test, build_ml_features, train_and_score, combined_score
+from config import GAMES, MAX_DRAWS_WINDOW, SLOT_LABELS
+from analyzer import load_draws, frequency_analysis, poisson_fairness_test, combined_score
 from coverage_tracker import log_combo, get_coverage_stats
 
 DISCLAIMER = (
-    "⚠️ Disclaimer: Statistical exploration lang ito (frequency + Poisson + ML). "
-    "Independent random event ang bawat lotto draw -- hindi ito totoong predictive "
-    "at hindi ka dapat mag-bet base lang dito. Para sa libangan/research purposes lang."
+    "⚠️ Disclaimer: Historical-frequency analysis lang ito; hindi ito proven predictive edge. "
+    "Independent random event ang bawat lotto draw. Walang guarantee ng panalo at "
+    "huwag mag-bet base lang sa recommendation. Para sa research/libangan lang."
 )
 
 
@@ -50,13 +49,40 @@ def pick_combo_numbers(scores, pick):
 
 
 def pick_digit_numbers(scores, pick, number_range, seed=42):
-    """Ordered digit selection with replacement; repeated digits are valid."""
-    ranked = scores.reindex(range(number_range[0], number_range[1] + 1)).fillna(0.0)
-    weights = ranked.clip(lower=0).to_numpy(dtype=float)
-    if not np.isfinite(weights).all() or weights.sum() <= 0:
-        weights = np.ones(len(ranked), dtype=float)
-    rng = np.random.default_rng(seed)
-    return [int(x) for x in rng.choice(ranked.index.to_numpy(), size=pick, replace=True, p=weights / weights.sum())]
+    """Backward-compatible weighted digit sampler for research/tests only.
+
+    Production ordered-game recommendations use pick_ordered_numbers so that
+    each draw position is modeled separately.
+    """
+    lo, hi = number_range
+    values = list(range(lo, hi + 1))
+    weights = [max(0.0, float(scores.get(value, 0.0))) for value in values]
+    if not any(weight > 0 for weight in weights):
+        weights = [1.0] * len(values)
+    return random.Random(seed).choices(values, weights=weights, k=pick)
+
+
+def pick_ordered_numbers(df, num_cols, pick, number_range, window=120, smoothing=1.0):
+    """Rank each draw position independently; preserve order and valid repeats.
+
+    The previous implementation collapsed ordered draws into an unordered
+    digit-presence model, then sampled from one aggregate score vector. That
+    discarded position information. This selector uses only prior draws and
+    independently ranks the historical values at each position.
+    """
+    lo, hi = number_range
+    history = df.tail(window)
+    recommendation = []
+    position_top = []
+    for col in num_cols[:pick]:
+        counts = history[col].value_counts().reindex(range(lo, hi + 1), fill_value=0)
+        # Additive smoothing prevents zero-probability positions; it does not
+        # change the ranking when the same prior is applied to every value.
+        smoothed = counts.astype(float) + float(smoothing)
+        ranked = sorted(smoothed.index, key=lambda value: (-smoothed.loc[value], int(value)))
+        recommendation.append(int(ranked[0]))
+        position_top.append([int(value) for value in ranked[:3]])
+    return recommendation, position_top
 
 
 def run_analysis(df, num_cols, game_cfg):
@@ -65,16 +91,27 @@ def run_analysis(df, num_cols, game_cfg):
     order_matters = game_cfg.get("order_matters", False)
     freq_counts = frequency_analysis(df, num_cols, number_range)
     poisson_result = poisson_fairness_test(freq_counts, len(df), pick, number_range)
-    training_df, next_draw_df = build_ml_features(df, num_cols, number_range)
-    ml_probs, ml_used = train_and_score(training_df, next_draw_df, number_range, MIN_DRAWS_FOR_ML)
+
+    # Keep the unvalidated ML model out of production recommendations.
+    # Historical frequency is retained as a transparent baseline; neither
+    # method is evidence of an edge in an independent random lottery draw.
+    ml_probs = freq_counts.astype(float).mul(0).add(0.5)
+    ml_used = False
+
     scores = combined_score(freq_counts, poisson_result, ml_probs, ml_used)
 
-    if game_cfg["type"] == "combo" and not order_matters:
+    position_top = None
+    if order_matters:
+        recommendation, position_top = pick_ordered_numbers(
+            df, num_cols, pick, number_range
+        )
+        recommendation_method = "position_specific_historical_frequency"
+    elif game_cfg["type"] == "combo":
         recommendation = pick_combo_numbers(scores, pick)
-    elif game_cfg["type"] == "digit" and game_cfg.get("allow_repetition", False):
-        recommendation = pick_digit_numbers(scores, pick, number_range)
+        recommendation_method = "historical_frequency_baseline"
     else:
-        recommendation = [int(x) for x in scores.index[:pick]]
+        recommendation = pick_combo_numbers(scores, pick)
+        recommendation_method = "historical_frequency_baseline"
 
     return {
         "n_draws_analyzed": len(df),
@@ -84,6 +121,8 @@ def run_analysis(df, num_cols, game_cfg):
         "poisson_p_value": round(poisson_result["p_value"], 4),
         "significantly_biased": poisson_result["is_significantly_biased"],
         "recommendation": recommendation,
+        "recommendation_method": recommendation_method,
+        "position_top_3": position_top,
         "top_10_by_score": [int(x) for x in scores.index[:10]],
     }
 
