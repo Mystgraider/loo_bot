@@ -108,7 +108,7 @@ def run_analysis(df, num_cols, game_cfg):
         recommendation_method = "position_specific_historical_frequency"
     elif game_cfg["type"] == "combo":
         recommendation = pick_combo_numbers(scores, pick)
-        recommendation_method = "experimental_ml_unvalidated" if ml_used else "historical_frequency_baseline"
+        recommendation_method = "historical_frequency_baseline"
     else:
         recommendation = pick_combo_numbers(scores, pick)
         recommendation_method = "historical_frequency_baseline"
