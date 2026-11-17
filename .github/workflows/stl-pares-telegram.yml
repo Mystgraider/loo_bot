@@ -1,0 +1,58 @@
+name: Aklan STL Pares Telegram Signal
+
+on:
+  schedule:
+    - cron: "50 5 * * *"   # 1:50 PM Philippines time
+    - cron: "50 10 * * *"  # 6:50 PM Philippines time
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "Draw slot to send"
+        required: true
+        type: choice
+        options:
+          - "2:00 PM"
+          - "7:00 PM"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stl-pares-telegram
+  cancel-in-progress: false
+
+jobs:
+  send-stl-signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip requests
+      - name: Select draw slot
+        id: slot
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SLOT: ${{ inputs.slot }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            SLOT="$INPUT_SLOT"
+          elif [ "$SCHEDULE" = "50 5 * * *" ]; then
+            SLOT="2:00 PM"
+          else
+            SLOT="7:00 PM"
+          fi
+          echo "slot=$SLOT" >> "$GITHUB_OUTPUT"
+      - name: Generate and send separate STL signal
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STL_SLOT: ${{ steps.slot.outputs.slot }}
+        run: python stl_telegram.py
