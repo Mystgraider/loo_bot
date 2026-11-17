@@ -111,6 +111,8 @@ def run_analysis(df, num_cols, game_cfg):
         "poisson_p_value": round(poisson_result["p_value"], 4),
         "significantly_biased": poisson_result["is_significantly_biased"],
         "recommendation": recommendation,
+        "recommendation_method": recommendation_method,
+        "position_top_3": position_top,
         "top_10_by_score": [int(x) for x in scores.index[:10]],
     }
 
