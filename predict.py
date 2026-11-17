@@ -79,14 +79,11 @@ def run_analysis(df, num_cols, game_cfg):
     freq_counts = frequency_analysis(df, num_cols, number_range)
     poisson_result = poisson_fairness_test(freq_counts, len(df), pick, number_range)
 
-    # XGBoost's current labels represent number presence in a draw, not
-    # position-specific outcomes. It is therefore not valid for ordered games.
-    if order_matters:
-        ml_probs = freq_counts.astype(float).mul(0).add(0.5)
-        ml_used = False
-    else:
-        training_df, next_draw_df = build_ml_features(df, num_cols, number_range)
-        ml_probs, ml_used = train_and_score(training_df, next_draw_df, number_range, MIN_DRAWS_FOR_ML)
+    # Keep the unvalidated ML model out of production recommendations.
+    # Historical frequency is retained as a transparent baseline; neither
+    # method is evidence of an edge in an independent random lottery draw.
+    ml_probs = freq_counts.astype(float).mul(0).add(0.5)
+    ml_used = False
 
     scores = combined_score(freq_counts, poisson_result, ml_probs, ml_used)
 
