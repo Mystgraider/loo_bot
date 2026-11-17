@@ -3,6 +3,7 @@
 
 import json
 import os
+import random
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -45,6 +46,20 @@ def split_by_slot(df):
 
 def pick_combo_numbers(scores, pick):
     return sorted(int(n) for n in scores.index[:pick])
+
+
+def pick_digit_numbers(scores, pick, number_range, seed=42):
+    """Backward-compatible weighted digit sampler for research/tests only.
+
+    Production ordered-game recommendations use pick_ordered_numbers so that
+    each draw position is modeled separately.
+    """
+    lo, hi = number_range
+    values = list(range(lo, hi + 1))
+    weights = [max(0.0, float(scores.get(value, 0.0))) for value in values]
+    if not any(weight > 0 for weight in weights):
+        weights = [1.0] * len(values)
+    return random.Random(seed).choices(values, weights=weights, k=pick)
 
 
 def pick_ordered_numbers(df, num_cols, pick, number_range, window=120, smoothing=1.0):
