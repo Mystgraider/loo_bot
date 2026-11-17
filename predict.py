@@ -17,9 +17,9 @@ from analyzer import load_draws, frequency_analysis, poisson_fairness_test, comb
 from coverage_tracker import log_combo, get_coverage_stats
 
 DISCLAIMER = (
-    "⚠️ Disclaimer: Statistical exploration lang ito (frequency + Poisson + ML). "
-    "Independent random event ang bawat lotto draw -- hindi ito totoong predictive "
-    "at hindi ka dapat mag-bet base lang dito. Para sa libangan/research purposes lang."
+    "⚠️ Disclaimer: Historical-frequency analysis lang ito; hindi ito proven predictive edge. "
+    "Independent random event ang bawat lotto draw. Walang guarantee ng panalo at "
+    "huwag mag-bet base lang sa recommendation. Para sa research/libangan lang."
 )
 
 
